@@ -1,4 +1,4 @@
-# 📄 DocVerseX-RAG-Engine
+# 📄 PDF-QA-System
 
 An intelligent **Retrieval-Augmented Generation (RAG)** application that enables users to interact with PDF documents using natural language. The system extracts text from uploaded PDFs, converts it into semantic vector embeddings, retrieves the most relevant content using FAISS similarity search, and generates context-aware responses using Google's Gemini Large Language Model (LLM).
 
