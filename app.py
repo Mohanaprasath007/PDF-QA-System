@@ -1,103 +1,222 @@
-import streamlit as st
-from PyPDF2 import PdfReader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
 import os
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-import google.generativeai as genai
-from langchain_community.vectorstores import FAISS
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.chains.question_answering import load_qa_chain
-from langchain.prompts import PromptTemplate
 
+import streamlit as st
 
 from dotenv import load_dotenv
 
+from ingestion.pdf_loader import extract_pdf_text
+
+from ingestion.text_chunker import create_text_chunks
+
+from ingestion.vector_store import create_vector_store
+
+from graph.workflow import build_graph
+
+
+# --------------------------------
+# Environment
+# --------------------------------
+
 load_dotenv()
-os.getenv("GOOGLE_API_KEY")
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
-def get_pdf_text(pdf_docs):
-    text=""
-    for pdf in pdf_docs:
-        pdf_reader= PdfReader(pdf)
-        for page in pdf_reader.pages:
-            text+= page.extract_text()
-    return  text
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 
 
+if not GOOGLE_API_KEY:
 
-def get_text_chunks(text):
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=10000, chunk_overlap=1000)
-    chunks = text_splitter.split_text(text)
-    return chunks
+    st.error("GOOGLE_API_KEY not found in .env")
 
-
-def get_vector_store(text_chunks):
-    embeddings = GoogleGenerativeAIEmbeddings(model = "models/embedding-001")
-    vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
-    vector_store.save_local("faiss_index")
+    st.stop()
 
 
-def get_conversational_chain():
+if not TAVILY_API_KEY:
 
-    prompt_template = """
-    
-    Context:\n {context}?\n
-    Question: \n{question}\n
+    st.error("TAVILY_API_KEY not found in .env")
 
-    Answer:
-    """
-
-    model = ChatGoogleGenerativeAI(model="gemini-pro",
-                             temperature=0.3)
-
-    prompt = PromptTemplate(template = prompt_template, input_variables = ["context", "question"])
-    chain = load_qa_chain(model, chain_type="stuff", prompt=prompt)
-
-    return chain
+    st.stop()
 
 
+# --------------------------------
+# Page configuration
+# --------------------------------
 
-def user_input(user_question):
-    embeddings = GoogleGenerativeAIEmbeddings(model = "models/embedding-001")
-    
-    new_db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
-
-    docs = new_db.similarity_search(user_question)
-
-    chain = get_conversational_chain()
-
-    
-    response = chain(
-        {"input_documents":docs, "question": user_question}
-        , return_only_outputs=True)
-
-    print(response)
-    st.write("Reply: ", response["output_text"])
+st.set_page_config(
+    page_title="DocVerseX Agentic RAG",
+    page_icon="📚",
+    layout="wide"
+)
 
 
+st.title("📚 DocVerseX Agentic RAG")
+
+st.write(
+    "Ask questions from your PDFs or current information "
+    "from the web using an adaptive Agentic RAG workflow."
+)
 
 
-def main():
-    st.set_page_config("Chat PDF")
-    st.header("Chat with PDF using Gemini💁")
+# --------------------------------
+# Build graph
+# --------------------------------
 
-    user_question = st.text_input("Ask a Question from the PDF Files")
-
-    if user_question:
-        user_input(user_question)
-
-    with st.sidebar:
-        st.title("Menu:")
-        pdf_docs = st.file_uploader("Upload your PDF Files and Click on the Submit & Process Button", accept_multiple_files=True)
-        if st.button("Submit & Process"):
-            with st.spinner("Processing..."):
-                raw_text = get_pdf_text(pdf_docs)
-                text_chunks = get_text_chunks(raw_text)
-                get_vector_store(text_chunks)
-                st.success("Done")
+agent_graph = build_graph()
 
 
+# --------------------------------
+# Sidebar
+# --------------------------------
 
-if __name__ == "__main__":
-    main()
+with st.sidebar:
+
+    st.header("Document Processing")
+
+    pdf_docs = st.file_uploader(
+        "Upload PDF files",
+        type=["pdf"],
+        accept_multiple_files=True
+    )
+
+    process_button = st.button(
+        "Process Documents"
+    )
+
+
+# --------------------------------
+# Process PDFs
+# --------------------------------
+
+if process_button:
+
+    if not pdf_docs:
+
+        st.warning(
+            "Please upload at least one PDF."
+        )
+
+    else:
+
+        with st.spinner(
+            "Processing documents..."
+        ):
+
+            raw_text = extract_pdf_text(
+                pdf_docs
+            )
+
+            if not raw_text.strip():
+
+                st.error(
+                    "No readable text was found in the PDFs."
+                )
+
+                st.stop()
+
+            chunks = create_text_chunks(
+                raw_text
+            )
+
+            create_vector_store(
+                chunks
+            )
+
+        st.success(
+            f"Processed {len(chunks)} text chunks."
+        )
+
+
+# --------------------------------
+# User question
+# --------------------------------
+
+question = st.text_input(
+    "Ask a question"
+)
+
+
+if question:
+
+    if not os.path.exists(
+        "faiss_index"
+    ):
+
+        st.warning(
+            "Please upload and process a PDF first."
+        )
+
+        st.stop()
+
+    with st.spinner(
+        "Agent is thinking..."
+    ):
+
+        initial_state = {
+            "question": question,
+            "retry_count": 0
+        }
+
+        result = agent_graph.invoke(
+            initial_state
+        )
+
+
+    # --------------------------------
+    # Display result
+    # --------------------------------
+
+    st.subheader("Answer")
+
+    st.write(
+        result.get(
+            "answer",
+            "No answer generated."
+        )
+    )
+
+
+    # --------------------------------
+    # Agent information
+    # --------------------------------
+
+    with st.expander(
+        "Agent Execution Details"
+    ):
+
+        st.write(
+            "Query Type:",
+            result.get(
+                "query_type"
+            )
+        )
+
+        st.write(
+            "Retrieval Score:",
+            result.get(
+                "retrieval_score"
+            )
+        )
+
+        st.write(
+            "Retry Count:",
+            result.get(
+                "retry_count"
+            )
+        )
+
+        st.write(
+            "Verification:",
+            result.get(
+                "verification_result"
+            )
+        )
+
+        if result.get(
+            "rewritten_query"
+        ):
+
+            st.write(
+                "Rewritten Query:",
+                result.get(
+                    "rewritten_query"
+                )
+            )
